@@ -67,7 +67,7 @@ function parseScheduleTime(body) {
 
   const patterns = [
     /Schedule date found:\s*"(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2})"/i,
-    /Schedule date:\s*"(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2})/i,
+    /Schedule date:\s*"(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2})"/i,
     /Schedule date:\s*(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2})/i,
     /scheduled(?:\s+at|\s+date)?[:：]\s*(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2})/i,
     /预约时间[:：]\s*(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2})/i,
@@ -422,237 +422,28 @@ async function processPullRequest(pr) {
 }
 
 /**
- * 获取最近一个预约时间
- *
- * 返回：
- *
- * {
- *   pr,
- *   scheduledAt
- * }
- *
- * 如果没有未来预约，返回 null
- */
-function findNextScheduledPR(pullRequests) {
-  const now = getCurrentTime();
-
-  const scheduledPRs = [];
-
-  for (const pr of pullRequests) {
-    const scheduleString = parseScheduleTime(pr.body);
-
-    if (!scheduleString) {
-      continue;
-    }
-
-    const scheduledAt = parseBeijingTime(scheduleString);
-
-    if (!scheduledAt) {
-      continue;
-    }
-
-    /**
-     * 只关注未来的预约时间
-     *
-     * 已经到时间的 PR 不放进下一次 timer，
-     * 避免 scheduler 一直立即触发。
-     */
-    if (scheduledAt > now) {
-      scheduledPRs.push({
-        pr,
-        scheduledAt,
-      });
-    }
-  }
-
-  if (scheduledPRs.length === 0) {
-    return null;
-  }
-
-  /**
-   * 找到最近的预约时间
-   */
-  scheduledPRs.sort(
-    (a, b) =>
-      a.scheduledAt.getTime() - b.scheduledAt.getTime(),
-  );
-
-  return scheduledPRs[0];
-}
-
-/**
  * 主检查函数
- *
- * 与之前不同：
- *
- * 不再每分钟检查一次所有 PR。
- *
- * 而是：
- *
- * 1. 获取所有 Open PR
- * 2. 找到最近预约时间
- * 3. setTimeout 等到准确时间
- * 4. 到时间后处理
- * 5. 再重新扫描
  */
-async function scheduleNextCheck() {
-  /**
-   * 防止旧 timer 存在
-   */
-  if (schedulerTimer) {
-    clearTimeout(schedulerTimer);
-    schedulerTimer = null;
-  }
-
+async function checkAllPullRequests() {
   log("========================================");
-  log("Starting scheduled PR scan");
+  log("Starting scheduled PR check");
 
   try {
     const pullRequests = await getOpenPullRequests();
 
     log(`Found ${pullRequests.length} open PR(s)`);
 
-    const now = getCurrentTime();
-
-    /**
-     * 先处理已经到时间的 PR
-     *
-     * 正常情况下：
-     *
-     * setTimeout 会在预约时间触发
-     *
-     * 但如果：
-     *
-     * - Docker 刚刚重启
-     * - 容器暂停后恢复
-     * - scheduler 被延迟
-     *
-     * 可能发现预约时间已经过去。
-     *
-     * 这种情况下直接处理。
-     */
-    const duePRs = [];
-
     for (const pr of pullRequests) {
-      const scheduleString = parseScheduleTime(pr.body);
-
-      if (!scheduleString) {
-        continue;
-      }
-
-      const scheduledAt = parseBeijingTime(scheduleString);
-
-      if (!scheduledAt) {
-        continue;
-      }
-
-      if (scheduledAt <= now) {
-        duePRs.push(pr);
-      }
-    }
-
-    /**
-     * 处理已经到时间的 PR
-     */
-    for (const pr of duePRs) {
       await processPullRequest(pr);
     }
-
-    /**
-     * 处理完成以后重新获取 PR
-     *
-     * 因为上面的 merge 可能已经改变了 PR 状态。
-     */
-    const latestPullRequests = await getOpenPullRequests();
-
-    /**
-     * 找到下一个预约时间
-     */
-    const nextSchedule = findNextScheduledPR(
-      latestPullRequests,
-    );
-
-    if (!nextSchedule) {
-      /**
-       * 没有未来预约
-       *
-       * 每分钟唤醒一次只是为了发现：
-       *
-       * 新创建的预约 PR
-       *
-       * 注意：
-       *
-       * 这个 60 秒不会影响已经存在的预约 PR 的准确性。
-       */
-      log(
-        `No upcoming scheduled PR. Next scan in ${
-          CHECK_INTERVAL / 1000
-        } seconds`,
-      );
-
-      schedulerTimer = setTimeout(
-        scheduleNextCheck,
-        CHECK_INTERVAL,
-      );
-
-      return;
-    }
-
-    const delay =
-      nextSchedule.scheduledAt.getTime() -
-      getCurrentTime().getTime();
-
-    log(
-      `Next scheduled PR: #${nextSchedule.pr.number}`,
-    );
-
-    log(
-      `Next scheduled time: ${nextSchedule.scheduledAt.toLocaleString(
-        "zh-CN",
-        {
-          timeZone: TIME_ZONE,
-          hour12: false,
-        },
-      )}`,
-    );
-
-    log(
-      `Waiting ${Math.max(
-        0,
-        Math.ceil(delay / 1000),
-      )} seconds`,
-    );
-
-    /**
-     * 直接等待到预约时间
-     */
-    schedulerTimer = setTimeout(
-      scheduleNextCheck,
-      Math.max(0, delay),
-    );
   } catch (error) {
     log(
-      "Failed to schedule next check:",
+      "Failed to check pull requests:",
       error.response?.data || error.message,
-    );
-
-    /**
-     * 如果 GitHub API 出错，
-     * 不让 scheduler 死掉。
-     *
-     * 60 秒以后重新尝试。
-     */
-    log(
-      `Retrying in ${CHECK_INTERVAL / 1000} seconds`,
-    );
-
-    schedulerTimer = setTimeout(
-      scheduleNextCheck,
-      CHECK_INTERVAL,
     );
   }
 
-  log("Finished scheduled PR scan");
+  log("Finished scheduled PR check");
   log("========================================");
 }
 
@@ -661,10 +452,49 @@ async function scheduleNextCheck() {
  */
 log("GitHub PR Merge Scheduler started");
 log(`Repository: ${OWNER}/${REPO}`);
-log(`Check interval: ${CHECK_INTERVAL} ms`);
+log(`Check interval: every 5 minutes at :00 / :05 / :10 ...`);
 log(`Time zone: ${TIME_ZONE}`);
 
 /**
- * 启动 scheduler
+ * 对齐到下一个 5 分钟整点
+ *
+ * 例如：
+ * 14:02:30 -> 14:05:00
+ * 14:05:01 -> 14:10:00
+ * 14:09:59 -> 14:10:00
  */
-await scheduleNextCheck();
+function scheduleNextCheck() {
+  const now = new Date();
+
+  const next = new Date(now);
+
+  const currentMinutes = now.getMinutes();
+
+  const nextMinutes = Math.floor(currentMinutes / 5) * 5 + 5;
+
+  next.setMinutes(nextMinutes);
+  next.setSeconds(0);
+  next.setMilliseconds(0);
+
+  const delay = next.getTime() - now.getTime();
+
+  log(
+    `Next PR check scheduled at ${next.toLocaleString("zh-CN", {
+      timeZone: TIME_ZONE,
+      hour12: false,
+    })}`,
+  );
+
+  setTimeout(async () => {
+    await checkAllPullRequests();
+
+    // 检测完成后继续对齐下一个 5 分钟整点
+    scheduleNextCheck();
+  }, delay);
+}
+
+/**
+ * 启动时不立即检测
+ * 直接等待下一个 5 分钟整点
+ */
+scheduleNextCheck();

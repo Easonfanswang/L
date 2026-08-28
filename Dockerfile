@@ -9,7 +9,6 @@ COPY index.js ./
 
 ENV NODE_ENV=production
 
-ENV CHECK_INTERVAL=60000
 ENV TIME_ZONE="Asia/Shanghai"
 
 CMD ["npm", "start"]
