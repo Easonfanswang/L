@@ -1,0 +1,31 @@
+name: Merge Schedule
+
+on:
+  pull_request:
+    types:
+      - opened
+      - edited
+      - synchronize
+  schedule:
+    - cron: '0 * * * *' # 每小时整点检查一次
+
+# 必须显式声明写权限
+permissions:
+  contents: write
+  pull-requests: write
+  checks: read
+  statuses: read
+
+jobs:
+  merge_schedule:
+    runs-on: ubuntu-latest
+    steps:
+      - id: merge-schedule
+        uses: gr2m/merge-schedule-action@v2
+        with:
+          merge_method: merge
+          time_zone: 'Asia/Shanghai' # 已设为北京时间，PR 中可直接填北京时间
+          require_statuses_success: 'true'
+          automerge_fail_label: 'merge-schedule-failed'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # 必须全大写
