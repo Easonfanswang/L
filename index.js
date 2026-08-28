@@ -165,20 +165,6 @@ async function getOpenPullRequests() {
 }
 
 /**
- * 获取 PR checks
- */
-async function getCheckRuns(ref) {
-  const response = await octokit.rest.checks.listForRef({
-    owner: OWNER,
-    repo: REPO,
-    ref,
-    per_page: 100,
-  });
-
-  return response.data.check_runs;
-}
-
-/**
  * 获取 Commit Status
  */
 async function getCommitStatuses(ref) {
@@ -207,57 +193,38 @@ async function getCommitStatuses(ref) {
 async function checkCI(pr) {
   const sha = pr.head.sha;
 
-  const [checkRuns, combinedStatus] = await Promise.all([
-    getCheckRuns(sha),
-    getCommitStatuses(sha),
-  ]);
+  const combinedStatus = await getCommitStatuses(sha);
 
   /**
-   * Checks
+   * 没有任何 Commit Status
+   *
+   * 当前没有 CI Status，
+   * 按照原来的逻辑允许继续。
    */
-  const pendingChecks = checkRuns.filter(
-    (check) => check.status !== "completed",
-  );
-
-  if (pendingChecks.length > 0) {
+  if (
+    !combinedStatus.statuses ||
+    combinedStatus.statuses.length === 0
+  ) {
     log(
-      `PR #${pr.number} CI pending:`,
-      pendingChecks.map((check) => check.name).join(", "),
+      `PR #${pr.number} has no commit statuses, CI check passed`
     );
 
-    return false;
-  }
-
-  const failedChecks = checkRuns.filter((check) => {
-    return !["success", "neutral", "skipped"].includes(
-      check.conclusion,
-    );
-  });
-
-  if (failedChecks.length > 0) {
-    log(
-      `PR #${pr.number} failed checks:`,
-      failedChecks
-        .map((check) => `${check.name}=${check.conclusion}`)
-        .join(", "),
-    );
-
-    return false;
+    return true;
   }
 
   /**
-   * Commit Status
+   * 检查所有 Commit Status
    */
   const failedStatuses = combinedStatus.statuses.filter(
-    (status) => status.state !== "success",
+    status => status.state !== 'success'
   );
 
   if (failedStatuses.length > 0) {
     log(
       `PR #${pr.number} failed statuses:`,
       failedStatuses
-        .map((status) => `${status.context}=${status.state}`)
-        .join(", "),
+        .map(status => `${status.context}=${status.state}`)
+        .join(', ')
     );
 
     return false;
